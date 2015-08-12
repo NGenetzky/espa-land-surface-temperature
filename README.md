@@ -7,7 +7,12 @@ This project contains application source code for producing Land Surface Tempera
 
 Algorithms for specific sensors, where warranted, are located in sensor specific sub-directories.  See the sensor specific sub-directories for more details and usage examples.
 
-This project is hosted by the US Geological Survey (USGS) Earth Resources Observation and Science (EROS) Land Satellite Data Systems (LSDS) Science Research and Development (LSRD) Project. For questions regarding this source code, please contact the Landsat Contact Us page and specify USGS CDR/ECV in the "Regarding" section. https://landsat.usgs.gov/contactus.php 
+This project is provided by the US Geological Survey (USGS) Earth Resources
+Observation and Science (EROS) Land Satellite Data Systems (LSDS) Science
+Research and Development (LSRD) Project. For questions regarding products
+produced by this source code, please contact the Landsat Contact Us page and
+specify USGS CDR/ECV in the "Regarding" section.
+https://landsat.usgs.gov/contactus.php 
 
 ### Downloads
 Land Surface Temperature source code

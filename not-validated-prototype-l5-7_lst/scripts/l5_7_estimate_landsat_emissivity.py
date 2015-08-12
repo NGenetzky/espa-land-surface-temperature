@@ -78,6 +78,7 @@ class EstimateLandsatEmissivity(object):
             self.max_y_extent = None
             self.dest_proj4 = None
 
+    # ------------------------------------------------------------------------
     def __init__(self, xml_filename, keep_intermediate_data=False):
         super(EstimateLandsatEmissivity, self).__init__()
 

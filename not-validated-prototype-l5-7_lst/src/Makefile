@@ -42,7 +42,7 @@ MATHLIB = -lm
 LOADLIB = $(EXLIB) $(MATHLIB)
 
 # Define the executable
-EXE = l5_7_intermedtiate_data
+EXE = l5_7_intermediate_data
 
 # Target for the executable
 all: $(EXE)

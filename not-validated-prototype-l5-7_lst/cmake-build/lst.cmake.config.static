@@ -1,1 +1,4 @@
-cmake .. -DBUILD_STATIC:BOOL=TRUE -DCMAKE_INSTALL_PREFIX=$PREFIX -DCMAKE_BUILD_TYPE="LSTE - Land Surface Temperature and Emissivity -- Static"
+# Install into the $PREFIXland_surface_temperature directory as other
+# environment variables depend on that location
+
+cmake .. -DBUILD_STATIC:BOOL=TRUE -DCMAKE_INSTALL_PREFIX=$PREFIX/land_surface_temperature -DCMAKE_BUILD_TYPE="LSTE - Land Surface Temperature and Emissivity -- Static"

@@ -1,0 +1,57 @@
+{
+    # This defines the format for archive sub-directory creation.
+    # 0: base LST auxillary directory
+    # 1: year
+    # 2: month
+    # 3: day
+    "archive_directory_format": "{0}/{1:0>4}/{2:0>2}/{3:0>2}",
+
+    # This defines the format for the filenames in the archive.
+    # 0: variable (HGT, SPFH, TMP)
+    # 1: year
+    # 2: month
+    # 3: day
+    # 4: hour (0000, 0300, ..., 2100)
+    # 5: file extension (hdr, grb)
+    "archive_name_format": "NARR_3D.{0}.{1:04}{2:02}{3:02}.{4:04}.{5}",
+
+    # This defines the block size to use for downloading, specified in bytes
+    # 16777216 = 16MB
+    # 33554432 = 32MB
+    "http_transfer_block_size": 16777216,
+
+    # The NARR variables this application requires
+    "narr_variables": [
+        "HGT",
+        "TMP",
+        "SPFH"
+    ],
+
+    # This defines the format for the names of the files on the
+    # remote UCAR system.
+    # 0: year
+    # 1: month
+    # 2: start day (inclusive)
+    # 3: end day (inclusive)
+    "remote_name_format": "NARR3D_{0:04}{1:02}_{2:02}{3:02}",
+
+    # This defines the login configuration for the UCAR system
+    "ucar_login_credentials": {
+        "login_data": {
+            # action is always 'login'
+            "action": "login",
+            # The email you established with UCAR
+            "email": null,
+            # The password for your UCAR account
+            "passwd": null
+        },
+        # The UCAR login URL
+        "login_url": "https://rda.ucar.edu/cgi-bin/login"
+    },
+
+    # This defines the URL format to the location of the NARR data on the
+    # remote UCAR system
+    # 0: year
+    # 1: filename
+    "ucar_url_format": "http://rda.ucar.edu/data/ds608.0/3HRLY/{0}/{1}"
+}
