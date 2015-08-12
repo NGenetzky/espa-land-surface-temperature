@@ -11,6 +11,6 @@ install:
 	install -d $(PREFIX)/bin
 	install -m 755 update_narr_aux_data_from_CISL_RDA.py $(PREFIX)/bin
 	install -m 644 lst_auxillary.config.example $(PREFIX)/bin
-
+	install -m 755 dl_recent_narr_aux_data_from_CISL_RDA.py $(PREFIX)/bin 
 clean:
 
