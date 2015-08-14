@@ -42,10 +42,10 @@ import calendar
 import itertools
 import multiprocessing as mp
 from cStringIO import StringIO
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from osgeo import gdal, osr
 from time import sleep
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from contextlib import closing
 import collections
 import json
@@ -54,6 +54,13 @@ import json
 def debug(tag, message):
     logger = logging.getLogger(tag)
     logger.debug(message)
+
+
+def substring_between(s, start, finish):
+    '''Find string between two substrings'''
+    end_of_start = s.index(start) + len(start)
+    start_of_finish = s.index(finish, end_of_start)
+    return s[end_of_start:start_of_finish]
 
 
 # ============================================================================
@@ -79,6 +86,7 @@ class Web(object):
             self.session = requests.Session()
 
             self.timeout = timeout
+            self.max_retries = max_retries
 
             # Determine if we are streaming or not based on block_size
             self.block_size = block_size
@@ -91,19 +99,11 @@ class Web(object):
             self.session.mount('https://', adapter)
 
         # --------------------------------------------------------------------
-        def login(self, login_url=None, login_data=None):
+        def login(self, login_url, login_data):
             '''
             Description:
                 Provides for establishing a logged in session.
             '''
-
-            # Verify that a login url was provided
-            if login_url is None:
-                raise Exception('{login_url} not defined')
-
-            # Verify that login data was provided
-            if login_data is None:
-                raise Exception('{login_data} not defined')
 
             # Login to the site
             self.session.post(url=login_url, data=login_data)
@@ -157,26 +157,23 @@ class Web(object):
                         retrieved_bytes += len(data_chunk)
 
                 if retrieved_bytes != file_size:
-                    raise Exception("Transfer Failed - HTTP -"
-                                    " Retrieved %d out of %d bytes"
-                                    % (retrieved_bytes, file_size))
+                    raise Exception('Transfer Failed - HTTP -'
+                                    ' Retrieved {0} out of {1} bytes'
+                                    .format(retrieved_bytes, file_size))
                 else:
                     return True
 
         # --------------------------------------------------------------------
-        def http_transfer_file(self, download_url, destination_file,
-                               headers=None):
+        def http_transfer_file(self, download_url, destination_file):
             '''
             Description:
                 Use http to transfer a file from a source location to a
                 destination file on the localhost.
-
             Returns:
                 status_code - One of the following
                             - 200, requests.codes['ok']
                             - 404, requests.codes['not_found']:
                             - 503, requests.codes['service_unavailable']:
-
             Notes:
                 If a 503 is returned, the logged exception should be reviewed
                 to determine the real cause of the error.
@@ -184,19 +181,14 @@ class Web(object):
 
             self.logger.info(download_url)
 
-            status_code = requests.codes['ok']
             retry_attempt = 0
             done = False
             while not done:
                 status_code = requests.codes['ok']
-                req = None
                 try:
 
-                    # if self.block_size is not None:
                     done = self._stream_file(download_url,
                                              destination_file)
-                    # else:
-                    #    done = self._get_file(download_url, destination_file)
 
                     if done:
                         self.logger.info("Transfer Complete - HTTP")
@@ -204,11 +196,8 @@ class Web(object):
                 except Exception:
                     self.logger.exception('HTTP - Transfer Issue')
 
-                    if req is not None:
-                        status_code = req.status_code
-
                     if status_code != requests.codes['not_found']:
-                        if retry_attempt > 3:
+                        if retry_attempt > self.max_retries:
                             self.logger.info('HTTP - Transfer Failed'
                                              ' - exceeded retry limit')
                             done = True
@@ -219,10 +208,6 @@ class Web(object):
                         # Not Found - So break the looping because we are done
                         done = True
 
-                finally:
-                    if req is not None:
-                        req.close()
-
             return status_code
 
 
@@ -232,35 +217,6 @@ class System(object):
     Description:
         Provides methods for interfacing with the host server.
     '''
-
-    base_aux_dir = None
-
-    @classmethod
-    def get_arch_filename(cls, variable, year, month, day, hour, ext):
-        # archive_name_format.format(variable, year, month, day, hour*100,'hdr')
-        return (Config.get('archive_name_format')
-                      .format(variable, year, month, day, hour*100, ext))
-
-    @classmethod
-    def get_arch_dir(cls, year, month, day):
-        # archive_directory_format.format(base_aux_dir, year, month, day)
-        return (Config.get('archive_directory_format')
-                      .format(cls.base_aux_dir, year, month, day))
-
-    @classmethod
-    def get_base_aux_dir(cls):
-        if cls.base_aux_dir is None:  # Check if its already stored
-            logger = logging.getLogger(__name__)
-            cls.base_aux_dir = os.environ.get('LST_AUX_DIR')
-            # print("$LST_AUX_DIR="+str(base_aux_dir))
-            if cls.base_aux_dir is None:
-                logger.info('Missing environment variable LST_AUX_DIR')
-                sys.exit(1)
-
-            if not os.path.isdir(cls.base_aux_dir):
-                logger.info('LST_AUX_DIR directory does not exist')
-                sys.exit(1)
-        return cls.base_aux_dir
 
     # ------------------------------------------------------------------------
     @staticmethod
@@ -353,155 +309,22 @@ class Config(object):
             return cls.EXT_NAME_FMT
         return cls.config[attr]
 
-# ============================================================================
-# NAME_FORMAT = 'NARR3D_{0:04}{1:02}_{2:02}{3:02}'
-def get_requested_file_list(s_date, e_date):
-    '''
-    Description:
-        Determines all of the base filenames to process based on the dates
-        provided.
-    '''
-    NAME_FORMAT = 'rcdas.{0}.awip32.merged'  # .format(year, month, day, hour)
-    # Zero the min and sec. Make sure hours is multiple of 3.
-    s_date.replace(hour=s_date.hour/3*3, minute=0, second=0)
-    # print('Start date was adjusted to: ' + s_date.isoformat())
-    hours_3 = timedelta(hours=3)
-    c_date = s_date
-
-    while c_date <= e_date:
-        datetime_formatted = datetime.strftime(c_date, '%Y%m%d%H')
-        yield(NAME_FORMAT.format(datetime_formatted))
-        c_date += hours_3
-
-# ============================================================================
-
-def process_grib_for_variable(args):
-    '''
-    Description:
-        Extract the specified variable from the grib file and archive it.
-    '''
-    # ARCH_FMT = 'NARR_3D.{0}.{1:04}{2:02}{3:02}.{4:04}.{5}'
-    # DIR_FMT = '{0}/{1:0>4}/{2:0>2}/{3:0>2}'
-
-    variable = args[0]
-    grib_file = args[1]
-
-    logger = logging.getLogger(__name__)
-
-    logger.info("Processing [{0}]".format(grib_file))
-
-    narr = NarrData.from_external_name(grib_file)
-
-    hdr_name = narr.get_internal_filename(variable, 'hdr')
-    grb_name = narr.get_internal_filename(variable, 'grb')
-
-    # Create inventory/header file to extract the variable data
-    cmd = ['wgrib', grib_file, '|', 'grep', variable, '>', hdr_name]
-    cmd = ' '.join(cmd)
-    output = ''
-    try:
-        logger.info('Executing [{0}]'.format(cmd))
-        output = System.execute_cmd(cmd)
-    except:
-        raise
-    finally:
-        if len(output) > 0:
-            logger.info(output)
-
-    # Create grib files for each variable
-    cmd = ['cat', hdr_name, '|',
-           'wgrib', grib_file, '-i', '-grib', '-o', grb_name]
-    cmd = ' '.join(cmd)
-    output = ''
-    try:
-        logger.info('Executing [{0}]'.format(cmd))
-        output = System.execute_cmd(cmd)
-    except:
-        raise
-    finally:
-        if len(output) > 0:
-            logger.info(output)
-
-    # Create new inventory/header file for the variable
-    cmd = ['wgrib', grb_name, '|', 'grep', variable, '>', hdr_name]
-    cmd = ' '.join(cmd)
-    output = ''
-    try:
-        logger.info('Executing [{0}]'.format(cmd))
-        output = System.execute_cmd(cmd)
-    except:
-        raise
-    finally:
-        if len(output) > 0:
-            logger.info(output)
-
-    # Determine the directory to place the data and create it if it does not
-    # exist
-    dest_path = narr.get_internal_drectory()
-
-    System.create_directory(dest_path)
-
-    # Archive the files
-    logger.info('Archiving into [{0}]'.format(dest_path))
-    # GRIB
-    dest_file = os.path.join(dest_path, grb_name)
-    shutil.copyfile(grb_name, dest_file)
-    # HEADER
-    dest_file = os.path.join(dest_path, hdr_name)
-    shutil.copyfile(hdr_name, dest_file)
-
-    # Cleanup the working directory
-    if os.path.exists(grb_name):
-        os.unlink(grb_name)
-    if os.path.exists(hdr_name):
-        os.unlink(hdr_name)
-
-
-def download_file_list(grib_file_list, block_size):
-    logger = logging.getLogger(__name__)
-    # Establish a logged in session
-    session = Ncep.get_session()
-
-    for grib_file in grib_file_list:
-        logger.info('Retrieving {0}'.format(grib_file))
-
-        # http://rda.ucar.edu/data/ds608.0/3HRLY/1979/NARR3D_197901_0103.tar
-        url = Ncep.get_url(grib_file)
-
-        session.http_transfer_file(url, grib_file)
-
-
-def process_file_list(grib_file_list):
-    list_var_gribs = []
-    for grib_file in grib_file_list:
-        vargrib = [('HGT', grib_file), ('TMP', grib_file), ('SPFH', grib_file)]
-        list_var_gribs.extend(vargrib)
-
-    for vg in list_var_gribs:
-        process_grib_for_variable(vg)
-
-    # Process each sub-file and archive the results using a process pool
-    # pool = mp.Pool(int(os.environ.get('OMP_NUM_THREADS', 1)))
-    # pool.map(process_grib_for_variable, list_var_gribs)
-
-    for grib_file in grib_file_list:  # Cleanup - Extracted grib files
-        if os.path.exists(grib_file):
-            os.unlink(grib_file)
-
-
-def substring_between(s, start, finish):
-    '''Find string between two substrings'''
-    end_of_start = s.index(start) + len(start)
-    start_of_finish = s.index(finish, end_of_start)
-    return s[end_of_start:start_of_finish]
-
 
 class Ncep(object):
-    ''' Sample reponse of the list of files
+    '''Interface for interacting with Ncep website
+
+    Sample response of the list of files (single line):
     '<tr><td><a href="rcdas.2015010300.awip32.merged.b">
         rcdas.2015010300.awip32.merged.b</a></td>
     <td align="right">08-Jan-2015 10:12  </td>
     <td align="right">1.3M</td></tr>\n'
+
+    Required for Ucar:
+                ucar_login_credentials = Config.get('ucar_login_credentials')
+
+            # Log in
+            cls.session.login(ucar_login_credentials['login_url'],
+                              ucar_login_credentials['login_data'])
     '''
     mtime_by_name = None
     session = None
@@ -516,21 +339,35 @@ class Ncep(object):
         fmt = Config.get('remote_name_format')
         return fmt.format(year, month, day, hour)
 
+    def get_datetime_from_filename(self, filename):
+        '''Extracts tuple (year, month, day, hour) from filename'''
+        return datetime.strptime(filename.split('.')[1],
+                                 '%Y%m%d%H')
+
     @classmethod
-    def download_file(cls, filename):
+    def get_grib_file(cls, filename):
         logger = logging.getLogger(__name__)
-        logger.info('Retrieving {0}'.format(filename))
-        cls.get_session().http_transfer_file(cls.get_url(filename),
-                                             filename)
+        if os.path.isfile(filename):
+            logger.info('{0} already exists. Skipping download.'
+                        .format(filename))
+        else:
+            logger.info('Retrieving {0}'.format(filename))
+            cls.get_session().http_transfer_file(cls.get_url(filename),
+                                                 filename)
 
     @staticmethod
     def get_list_of_external_data():
+        '''Retrieves list of available data from website's directory listing'''
         ArchiveData = collections.namedtuple('ArchiveData',
                                              ['name', 'mtime', 'size'])
         lines_thrown = 0
         data_list = []
+        try:
+            response = requests.get(Ncep.get_url(''))
+        except requests.ConnectionError as ce:
+            print('ConnectionError for request='+str(ce.request))
+            raise
 
-        response = requests.get(Ncep.get_url(''))
         for line in response.iter_lines():
             if('awip' not in line):
                 lines_thrown = lines_thrown + 1
@@ -548,19 +385,22 @@ class Ncep(object):
 
     @classmethod
     def get_session(cls):
+        '''Obtains and then retains session used for downloading'''
         if(cls.session is None):
             # Establish a logged in session
             cls.session = Web.Session()
-
-            ucar_login_credentials = Config.get('ucar_login_credentials')
-
-            # Log in
-            cls.session.login(ucar_login_credentials['login_url'],
-                              ucar_login_credentials['login_data'])
         return cls.session
 
     @classmethod
     def get_dict_of_date_modified(cls):
+        '''Returns a dictionary of mtime for ext. files with filename as key
+
+        Precondition:
+            Requires that get_list_of_external_data() returns list containing
+                NamedTuples with tuple.mtime and tuple.name defined.
+        Postcondition: Returns a dictionary
+            filename as key, external last modified time as value
+            '''
         if(cls.mtime_by_name is None):
             data_list = Ncep.get_list_of_external_data()
             cls.mtime_by_name = {}
@@ -581,40 +421,102 @@ class NarrData(object):
         hour = hour/3*3  # Ensures it is a multiple of 3
         self.dt = datetime(year, month, day, hour=hour)
 
-    def get_internal_drectory(self):
-        return System.get_arch_dir(self.dt.year, self.dt.month, self.dt.day)
+    @staticmethod
+    def from_external_name(external_name):
+        '''Creates NarrData object from name of external file'''
+        date_measured = Ncep.get_datetime_from_filename(external_name)
+        return NarrData(year=date_measured.year, month=date_measured.month,
+                        day=date_measured.day, hour=date_measured.hour)
 
-    def get_internal_name(self, variable, ext):
-        return System.get_arch_filename(variable, self.dt.year, self.dt.month,
-                                        self.dt.day, self.dt.hour, ext)
+    @staticmethod
+    def get_next_narr_data_gen(s_date, e_date, interval=timedelta(hours=3)):
+        '''Generator to iterate through NarrData objects in time interval
+
+        Note: time of datetime objects is ignored.
+            start of day is used for s_date and end of day for e_date.
+        Precondition:
+            s_date and e_date are of type datetime.datetime
+            s_date and e_date can also be of type datetime.date
+            interval is of type datetime.timedelta
+        Postcondition: Returns NarrData instance
+            s_date < datetime of NarrData < e_date
+            Consider narr[i-1], narr[i], narr[i+1] as previous, current and
+                next values of iterator. The following statement will be true:
+                narr[i-1].dt + interval == narr[i].dt == narr[i].dt - interval
+        '''
+        try:  # Handles if datetime objects are passed in.
+            start_time = datetime.combine(s_date.date(), datetime.min.time())
+            end_time = datetime.combine(e_date.date(), datetime.max.time())
+        except AttributeError:  # Handles if date objects are passed in.
+            start_time = datetime.combine(s_date, datetime.min.time())
+            end_time = datetime.combine(e_date, datetime.max.time())
+
+        logger = logging.getLogger(__name__)
+        logger.info('Generating list of data from {0} to {1}'
+                    .format(start_time.isoformat(), end_time.isoformat()))
+
+        current = NarrData(year=start_time.year, month=start_time.month,
+                           day=start_time.day, hour=start_time.hour)
+        while current.dt <= end_time:
+            yield(current)
+            current = current.get_next(interval)
+
+    def get_internal_drectory(self):
+        return NarrArchive.get_arch_dir(self.dt.year, self.dt.month,
+                                        self.dt.day)
 
     def get_internal_filename(self, variable, ext):
+        return NarrArchive.get_arch_filename(variable, self.dt.year,
+                                             self.dt.month, self.dt.day,
+                                             self.dt.hour, ext)
+
+    def get_internal_filepath(self, variable, ext):
         return os.path.join(self.get_internal_drectory(),
-                            self.get_internal_name(variable, ext))
+                            self.get_internal_filename(variable, ext))
 
     def get_internal_last_modified(self, variable='HGT', ext='hdr'):
+        '''Stat internal file for mtime. Default to HGT's hdr file.'''
         try:
-            filename = self.get_internal_filename(variable, ext)
+            filename = self.get_internal_filepath(variable, ext)
             ts_epoch = os.stat(filename).st_mtime
             return datetime.fromtimestamp(ts_epoch)
         except OSError:  # Expecting 'No such file or directory'
             raise NarrData.FileMissing
 
     def get_external_filename(self):
+        '''Returns the name of the grib file as choosen by data source'''
         return Ncep.get_filename(self.dt.year, self.dt.month, self.dt.day,
                                  self.dt.hour)
 
     def get_external_last_modified(self):
+        '''Returns last_modified time from dictionary stored in Ncep'''
         filename = self.get_external_filename()
         try:
             return Ncep.get_dict_of_date_modified()[filename]
         except KeyError:
             raise NarrData.FileMissing
 
-    def need_to_download(self):
+    def need_to_update(self):
+        '''Returns boolean of whether file neads to be donwloaded
+
+        Precondition:
+            get_internal_last_modified and get_external_last_modified return
+                value of type datetime.
+        Postcondition:
+            returns True if either of these conditions are true:
+                (1) Internal copy of file is older than remote copy
+                (2) Internal file is missing
+            returns False if either of these conditions are true:
+                (1) Internal modified time is more recent then external
+                    modified time
+                (2) External file is missing
+        '''
+        logger = logging.getLogger(__name__)
         try:
             ext_mtime = self.get_external_last_modified()
         except NarrData.FileMissing:  # Expecting 'No such file or directory'
+            logger.debug('{0} is missing from list of external files'
+                         .format(self.get_external_filename()))
             return False  # File is not available to download
 
         try:
@@ -623,63 +525,162 @@ class NarrData(object):
         except NarrData.FileMissing:  # Expecting 'No such file or directory'
             return True  # The file does not exist internally.
 
-    def download_grib(self):
-        Ncep.download_file(self.get_external_filename())
+    def get_grib_file(self):
+        Ncep.get_grib_file(self.get_external_filename())
 
-    def extract_var_from_grib(self):
+    def extract_vars_from_grib(self):
         for var in NarrData.variables:
-            process_grib_for_variable((var, self.get_external_filename()))
+            self.process_grib_for_variable(var)
 
-    def clean_downloaded_grib(self):
+    def move_files_to_archive(self):
+        for var in NarrData.variables:
+            self.move_to_archive(var)
+
+    def remove_grib_file(self):
         if os.path.exists(self.get_external_filename()):
             os.unlink(self.get_external_filename())
-
-    @staticmethod
-    def from_external_name(external_name):
-        date_measured = datetime.strptime(external_name.split('.')[1],
-                                          '%Y%m%d%H')
-        return NarrData(year=date_measured.year, month=date_measured.month,
-                        day=date_measured.day, hour=date_measured.hour)
-
-    @staticmethod
-    def get_base_aux_dir():
-        return System.get_base_aux_dir()
 
     def get_next(self, time_increment=timedelta(hours=3)):
         dt = self.dt + time_increment
         return NarrData(year=dt.year, month=dt.month,
                         day=dt.day, hour=dt.hour)
 
+    def process_grib_for_variable(self, variable, verbose=False):
+        '''Extract the specified variable from the grib file and archive it.'''
+        logger = logging.getLogger(__name__)
 
-def get_next_narr_data_gen(s_date, e_date, interval=timedelta(hours=3)):
-    # Zero the min and sec. Make sure hours is multiple of 3.
-    s_date.replace(hour=s_date.hour/3*3, minute=0, second=0)
-    e_date.replace(hour=e_date.hour/3*3, minute=0, second=0)
-    current = NarrData(year=s_date.year, month=s_date.month,
-                       day=s_date.day, hour=s_date.hour)
-    while current.dt <= e_date:
-        yield(current)
-        current = current.get_next(interval)
+        grib_file = self.get_external_filename()
+        hdr_name = self.get_internal_filename(variable, 'hdr')
+        grb_name = self.get_internal_filename(variable, 'grb')
+
+        if(os.path.isfile(grb_name) and os.path.isfile(hdr_name)):
+            logger.warning('{0} and {1} already exist. Skipping extraction.'
+                           .format(hdr_name, grb_name))
+            return
+        logger.info("Processing [{0}]".format(grib_file))
+
+        # Create inventory/header file to extract the variable data
+        cmd_create_temp_header = ['wgrib', grib_file, '|', 'grep', variable,
+                                  '>', hdr_name]
+        # Create grib files for each variable
+        cmd_create_final_grib = ['cat', hdr_name, '|',
+                                 'wgrib', grib_file, '-i', '-grib',
+                                 '-o', grb_name]
+        # Create new inventory/header file for the variable
+        cmd_create_final_header = ['wgrib', grb_name, '|', 'grep', variable,
+                                   '>', hdr_name]
+
+        cmds = [cmd_create_temp_header, cmd_create_final_grib,
+                cmd_create_final_header]
+
+        for cmd_list in cmds:
+            cmd = ' '.join(cmd_list)
+            output = ''
+            logger.info('Executing [{0}]'.format(cmd))
+            output = System.execute_cmd(cmd)
+            if(verbose):
+                if len(output) > 0:
+                    logger.info(output)
+
+    def move_to_archive(self, variable):
+        '''Moves grb and hdr files to archive location.
+
+        Precondition:
+            Header and Grib files for variable exist in current directory
+        Postcondition:
+            Header and Grib files for variable exist in archive directory
+            Header and Grib files for variable don't exist in current directory
+        '''
+        logger = logging.getLogger(__name__)
+
+        dest_path = self.get_internal_drectory()  # Determine the directory
+        hdr_name = self.get_internal_filename(variable, 'hdr')
+        grb_name = self.get_internal_filename(variable, 'grb')
+
+        System.create_directory(dest_path)  # create it if it does not exist
+
+        # Archive the files
+        logger.info('Archiving into [{0}]'.format(dest_path))
+        # GRIB
+        dest_file = os.path.join(dest_path, grb_name)
+        shutil.copyfile(grb_name, dest_file)
+        # HEADER
+        dest_file = os.path.join(dest_path, hdr_name)
+        shutil.copyfile(hdr_name, dest_file)
+
+        # Cleanup the working directory
+        if os.path.exists(grb_name):
+            os.unlink(grb_name)
+        if os.path.exists(hdr_name):
+            os.unlink(hdr_name)
+
+
+class NarrArchive(object):
+    _base_aux_dir = None
+
+    @classmethod
+    def get_arch_filename(cls, variable, year, month, day, hour, ext):
+        return (Config.get('archive_name_format')
+                      .format(variable, year, month, day, hour*100, ext))
+
+    @classmethod
+    def get_arch_dir(cls, year, month, day):
+        return (Config.get('archive_directory_format')
+                      .format(cls.get_base_aux_dir(), year, month, day))
+
+    @classmethod
+    def get_base_aux_dir(cls):
+        if cls._base_aux_dir is None:  # Check if its not already stored
+            logger = logging.getLogger(__name__)
+            cls._base_aux_dir = os.environ.get('LST_AUX_DIR')
+            # print("$LST_AUX_DIR="+str(base_aux_dir))
+            if cls._base_aux_dir is None:
+                logger.info('Missing environment variable LST_AUX_DIR')
+                sys.exit(1)
+            if not os.path.isdir(cls._base_aux_dir):
+                logger.info('LST_AUX_DIR directory does not exist')
+                sys.exit(1)
+        return cls._base_aux_dir
 
 
 def update(data_to_be_updated):
+    '''Downloads, extracts vars, and cleans temp files for data passed in
+
+    Precondition:
+        data_to_be_updated is a list of NarrData objects
+        External files exist for every data item
+    Postcondition:
+        Header and Grib files for each variable for each item in
+            data_to_be_updated exist in archive directory
+        No temporary files exist in the working directory
+    '''
     for data in data_to_be_updated:
-        data.download_grib()
+        data.get_grib_file()
 
     for data in data_to_be_updated:
-        data.extract_var_from_grib()
+        data.extract_vars_from_grib()
 
     for data in data_to_be_updated:
-        data.clean_downloaded_grib()
+        data.move_files_to_archive()
+
+    for data in data_to_be_updated:
+        data.remove_grib_file()
 
 
 def report(data_to_report):
+    '''Provides measured time, internal mtime and external mtime of data passed in
 
+    Note:
+        Reports number of files to be downloaded
+        Includes header to describe data being output.
+        Reports [measured time, internal mtime, external mtime] as csv
+    '''
+    # Statements helpful for debugging
     # print('\n'.join(Ncep.get_list_of_external_data()))
     # print(Ncep.get_dict_of_date_modified())
 
     report = []
-    print('Will download {0} files'.format(len(data_to_report)))
+    report.append('Measured, UpdatedLocally, UpdatedOnline')
     for data in data_to_report:
         line = []
         line.append(data.dt.isoformat())
@@ -695,42 +696,48 @@ def report(data_to_report):
     return '\n'.join(report)
 
 
+def report_between_dates(start_date, end_date):
+    data = NarrData.get_next_narr_data_gen(start_date, end_date)
+    return report(list(data))
+
+
+def YYYYMMDD_date(datestring):
+    try:
+        return datetime.strptime(datestring, '%Y%m%d').date()
+    except ValueError:
+        print('Dates must be the in the format: "YYYYMMDD"')
+        raise ValueError
+
+
 def parse_arguments():
     # Create a command line arugment parser
     description = ('Downloads LST auxillary inputs, then archives them for'
-                   ' future use.')
-    parser = ArgumentParser(description=description)
+                   ' future use. Dates must be the in the format: "YYYYMMDD"')
+    parser = ArgumentParser(description=description,
+                            formatter_class=ArgumentDefaultsHelpFormatter)
 
     # ---- Add parameters ----
     parser.add_argument('--start-date',
-                        action='store',
-                        dest='start_date',
-                        metavar='DATE',
+                        action='store', dest='start_date',
+                        metavar='YYYYMMDD', type=YYYYMMDD_date,
                         required=False,
-                        help='The start date YYYYMMDD if requiring a range.')
+                        default=date.today()-timedelta(days=10),
+                        help='The start date of the date range of auxiliary'
+                             ' data to download.')
 
     parser.add_argument('--end-date',
-                        action='store',
-                        dest='end_date',
-                        metavar='DATE',
-                        required=False,
-                        help='The end date YYYYMMDD if requiring a range.')
+                        action='store', dest='end_date',
+                        metavar='YYYYMMDD', type=YYYYMMDD_date,
+                        required=False, default=date.today(),
+                        help='The end date of the date range of auxiliary'
+                             ' data to download.')
 
     parser.add_argument('--date',
-                        action='store',
-                        dest='date',
-                        metavar='DATE',
+                        action='store', dest='date',
+                        metavar='YYYYMMDD', type=YYYYMMDD_date,
                         required=False,
-                        help='The date YYYYMMDD.')
-
-    parser.add_argument('--block-size',
-                        action='store',
-                        dest='block_size',
-                        metavar='SIZE',
-                        required=False,
-                        default=16777216,  # 16MB; 33554432 = 32MB
-                        help=('The block size used for streaming the download.'
-                              ' (Default => 16MB)'))
+                        help='Sets both start and end date to this date.'
+                             ' Overrides start-date and end-date arguments.')
 
     parser.add_argument('--version',
                         action='version',
@@ -740,35 +747,20 @@ def parse_arguments():
     # Parse the command line parameters
     args = parser.parse_args()
 
-    # Check if dates were given
+    # Check if date was specified. If so then override start and end.
     if args.date is not None:
-        s_date = datetime.strptime(args.date, '%Y%m%d')
-        e_date = datetime.strptime(args.date, '%Y%m%d')
-
-    elif args.end_date is not None:
-        e_date = datetime.strptime(args.end_date, '%Y%m%d')
-
-        if args.start_date is not None:
-            s_date = datetime.strptime(args.start_date, '%Y%m%d')
-
-        else:
-            s_date = e_date
-    else:
-        print('Defaulting to the 10 days ago until now')
-        e_date = datetime.now().replace(hour=0, minute=0, second=0)
-        s_date = e_date-timedelta(days=10)
-
-        # raise Exception('Must supply either --date or --end-date')
-
-    print('Dates {0} to {1}'.format(s_date.isoformat(), e_date.isoformat()))
-
-    args.start_date = s_date
-    args.end_date = e_date
+        args.start_date = args.date
+        args.end_date = args.date
     return args
 
 
-def main():
-    args = parse_arguments()
+def main(start_date, end_date):
+    '''Ensures all data between start_date and end_date are up to date.
+
+    Precondition:
+        start_date and end_date are of type datetime.datetime
+        start_date and end_date can also be of type datetime.date
+    '''
     # Setup the default logger format and level. log to STDOUT
     logging.basicConfig(format=('%(asctime)s.%(msecs)03d %(process)d'
                                 ' %(levelname)-8s'
@@ -777,30 +769,23 @@ def main():
                         datefmt='%Y-%m-%d %H:%M:%S',
                         level=logging.INFO,
                         stream=sys.stdout)
-
-    logger = logging.getLogger(__name__)  # Get the logger
-
     # Turn down the requests and urllib3 logging
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-    # narr_data = NarrData(year=2015, month=8, day=6)
+    logger = logging.getLogger(__name__)
 
-    data = get_next_narr_data_gen(args.start_date, args.end_date)
-    print(Ncep.get_list_of_external_data())
+    # Shows modified time of files related to each NarrData
+    logger.debug('\n'+report_between_dates(start_date, end_date))
 
-    data_to_be_updated = filter(lambda x: x.need_to_download(), data)
-    if True:
-        print('Measured,UpdatedLocally,UpdatedOnline')
-        print(report(data_to_be_updated))
-    if True:
-        update(data_to_be_updated)
+    data = NarrData.get_next_narr_data_gen(start_date, end_date)
 
-# Cleanup - The Tar ball
-#        if os.path.exists(filename):
-#            os.unlink(filename)
+    data_to_be_updated = filter(lambda x: x.need_to_update(), data)
+    logger.info('Will download {0} files'.format(len(data_to_be_updated)))
+    update(data_to_be_updated)
 
 
 if __name__ == '__main__':
-    main()
+    args = parse_arguments()
+    main(args.start_date, args.end_date)
 
