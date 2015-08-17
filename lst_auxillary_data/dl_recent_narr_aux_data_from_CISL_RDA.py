@@ -313,18 +313,12 @@ class Config(object):
 class Ncep(object):
     '''Interface for interacting with Ncep website
 
-    Sample response of the list of files (single line):
-    '<tr><td><a href="rcdas.2015010300.awip32.merged.b">
-        rcdas.2015010300.awip32.merged.b</a></td>
-    <td align="right">08-Jan-2015 10:12  </td>
-    <td align="right">1.3M</td></tr>\n'
-
-    Required for Ucar:
-                ucar_login_credentials = Config.get('ucar_login_credentials')
-
-            # Log in
-            cls.session.login(ucar_login_credentials['login_url'],
-                              ucar_login_credentials['login_data'])
+    NarrData depends on the following functionality of this class:
+        Provide means of getting a particular grib file into current working
+            directory via get_grib_file()
+        Provides a dict of all files available via get_dict_of_date_modified()
+            keys are filenames, values are time of last modification
+        Provides format of the grib filename via get_filename()
     '''
     mtime_by_name = None
     session = None
@@ -340,7 +334,15 @@ class Ncep(object):
         return fmt.format(year, month, day, hour)
 
     def get_datetime_from_filename(self, filename):
-        '''Extracts tuple (year, month, day, hour) from filename'''
+        '''Extracts tuple (year, month, day, hour) from filename
+
+        Precondition:
+            File is of format "rcdas.2015081321.awip32.merged" for the
+                measurement at 21:00 (9pm) on August 13th and similar for all
+                other measurements
+        Postcondition:
+            Returns datetime object of the time when the measurement took place
+        '''
         return datetime.strptime(filename.split('.')[1],
                                  '%Y%m%d%H')
 
@@ -357,7 +359,14 @@ class Ncep(object):
 
     @staticmethod
     def get_list_of_external_data():
-        '''Retrieves list of available data from website's directory listing'''
+        '''Retrieves list of available data from website's directory listing
+
+        Sample line from url reqest the list of files (single line):
+        '<tr><td><a href="rcdas.2015010300.awip32.merged.b">
+            rcdas.2015010300.awip32.merged.b</a></td>
+        <td align="right">08-Jan-2015 10:12  </td>
+        <td align="right">1.3M</td></tr>\n'
+    '''
         ArchiveData = collections.namedtuple('ArchiveData',
                                              ['name', 'mtime', 'size'])
         lines_thrown = 0
@@ -412,9 +421,10 @@ class Ncep(object):
 
 
 class NarrData(object):
-    variables = ['HGT', 'TMP', 'SPFH']
+    variables = ['HGT', 'TMP', 'SPFH']  # Variables that will be extracted
 
     class FileMissing(Exception):
+        '''Exception raised when file is missing internally or on website'''
         pass
 
     def __init__(self, year, month, day, hour=00):
@@ -475,7 +485,14 @@ class NarrData(object):
                             self.get_internal_filename(variable, ext))
 
     def get_internal_last_modified(self, variable='HGT', ext='hdr'):
-        '''Stat internal file for mtime. Default to HGT's hdr file.'''
+        '''Stat internal file for mtime. Default to HGT's hdr file.
+
+        Precondition:
+            File must exist at path given by get_internal_filepath
+        Postcondition:
+            returns time of last modification of internal file
+            raises NarrData.FileMissing if precondition is violated
+        '''
         try:
             filename = self.get_internal_filepath(variable, ext)
             ts_epoch = os.stat(filename).st_mtime
@@ -489,7 +506,15 @@ class NarrData(object):
                                  self.dt.hour)
 
     def get_external_last_modified(self):
-        '''Returns last_modified time from dictionary stored in Ncep'''
+        '''Returns last_modified time from dictionary stored in Ncep
+
+        Precondition:
+            Ncep class must be able to obtain list of data from website.
+            filename must exist as key in dict of date modified
+        Postcondition:
+            returns date of last modification of the entry with filename as key
+            Raises NarrData.FileMissing if either precondition is violated.
+        '''
         filename = self.get_external_filename()
         try:
             return Ncep.get_dict_of_date_modified()[filename]
@@ -529,10 +554,12 @@ class NarrData(object):
         Ncep.get_grib_file(self.get_external_filename())
 
     def extract_vars_from_grib(self):
+        '''process_grib_for_variable for each var in NarrData.variables'''
         for var in NarrData.variables:
             self.process_grib_for_variable(var)
 
     def move_files_to_archive(self):
+        '''move_to_archive for each var in NarrData.variables'''
         for var in NarrData.variables:
             self.move_to_archive(var)
 
@@ -546,7 +573,16 @@ class NarrData(object):
                         day=dt.day, hour=dt.hour)
 
     def process_grib_for_variable(self, variable, verbose=False):
-        '''Extract the specified variable from the grib file and archive it.'''
+        '''Extract the specified variable from the grib file and archive it.
+
+        Precondition:
+            A grib file, with the name get_external_filename(), exists in
+                current working directory.
+            wgrib must be installed on the system
+        Postcondition:
+            A grib and header for variable will exist in current working
+                directory with the name given by get_internal_filename()
+        '''
         logger = logging.getLogger(__name__)
 
         grib_file = self.get_external_filename()
@@ -776,10 +812,12 @@ def main(start_date, end_date):
     logger = logging.getLogger(__name__)
 
     # Shows modified time of files related to each NarrData
-    logger.debug('\n'+report_between_dates(start_date, end_date))
+    # logger.debug('\n'+report_between_dates(start_date, end_date))
 
+    # Determine the data that exists within the date range
     data = NarrData.get_next_narr_data_gen(start_date, end_date)
 
+    # Determine which files are stale or missing internally.
     data_to_be_updated = filter(lambda x: x.need_to_update(), data)
     logger.info('Will download {0} files'.format(len(data_to_be_updated)))
     update(data_to_be_updated)
