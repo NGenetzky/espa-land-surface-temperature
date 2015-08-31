@@ -210,6 +210,19 @@ class Web(object):
 
             return status_code
 
+        # --------------------------------------------------------------------
+        def get_last_modified(self, download_url, destination_file, headers=None):
+            '''
+            Notes: Downloading this way streams 'block_size' of data at a
+                   time.
+            '''
+            with closing(self.session.get(url=download_url,
+                                          timeout=self.timeout,
+                                          stream=self.stream,
+                                          headers=headers)) as req:
+                last_modified = req.headers['last-modified']
+            return last_modified
+
 
 # ============================================================================
 class System(object):
@@ -349,6 +362,13 @@ class Ncep(object):
     @classmethod
     def get_grib_file(cls, filename):
         logger = logging.getLogger(__name__)
+        last_modified = (cls.get_session()
+                            .get_last_modified(cls.get_url(filename),
+                                               filename))
+        logger.info('{0} last modified at {1} or at {2}'
+                    .format(filename, last_modified,
+                            cls.get_dict_of_date_modified()[filename]))
+
         if os.path.isfile(filename):
             logger.info('{0} already exists. Skipping download.'
                         .format(filename))
@@ -366,7 +386,8 @@ class Ncep(object):
             rcdas.2015010300.awip32.merged.b</a></td>
         <td align="right">08-Jan-2015 10:12  </td>
         <td align="right">1.3M</td></tr>\n'
-    '''
+        '''
+        logger = logging.getLogger(__name__)
         ArchiveData = collections.namedtuple('ArchiveData',
                                              ['name', 'mtime', 'size'])
         lines_thrown = 0
@@ -374,7 +395,7 @@ class Ncep(object):
         try:
             response = requests.get(Ncep.get_url(''))
         except requests.ConnectionError as ce:
-            print('ConnectionError for request='+str(ce.request))
+            logger.error('ConnectionError for request='+str(Ncep.get_url('')))
             raise
 
         for line in response.iter_lines():
