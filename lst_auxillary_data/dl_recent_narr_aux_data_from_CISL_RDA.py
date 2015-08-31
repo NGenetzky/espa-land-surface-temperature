@@ -140,7 +140,7 @@ class Web(object):
             retrieved_bytes = 0
             with closing(self.session.get(url=download_url,
                                           timeout=self.timeout,
-                                          stream=self.stream,
+                                          stream=True,
                                           headers=headers)) as req:
                 file_size = int(req.headers['content-length'])
 
@@ -222,6 +222,17 @@ class Web(object):
                                           headers=headers)) as req:
                 last_modified = req.headers['last-modified']
             return last_modified
+
+        # --------------------------------------------------------------------
+        def get_lines_from_url(self, download_url):
+            data = []
+            with closing(self.session.get(url=download_url,
+                                          timeout=self.timeout,
+                                          stream=self.stream)) as req:
+                for line in req.iter_lines():
+                    data.append(line)
+
+            return data
 
 
 # ============================================================================
@@ -378,7 +389,7 @@ class Ncep(object):
                                                  filename)
 
     @staticmethod
-    def get_list_of_external_data():
+    def get_list_of_external_data2():
         '''Retrieves list of available data from website's directory listing
 
         Sample line from url reqest the list of files (single line):
@@ -393,12 +404,47 @@ class Ncep(object):
         lines_thrown = 0
         data_list = []
         try:
-            response = requests.get(Ncep.get_url(''))
+            response = requests.get()
         except requests.ConnectionError as ce:
             logger.error('ConnectionError for request='+str(Ncep.get_url('')))
             raise
 
         for line in response.iter_lines():
+            if('awip' not in line):
+                lines_thrown = lines_thrown + 1
+                continue  # go to next line
+            (garbage, partial_line) = line.split('">', 1)
+            (name, partial_line) = partial_line.split('</a>', 1)
+            (garbage, partial_line) = partial_line.split('">', 1)
+            (mtime, partial_line) = partial_line.split('</td>', 1)
+            (garbage, partial_line) = partial_line.split('">', 1)
+            (size, partial_line) = partial_line.split('</td>', 1)
+
+            mtime = mtime.strip()  # Remove extra space
+            data_list.append(ArchiveData(name=name, mtime=mtime, size=size))
+        return data_list
+
+    @classmethod
+    def get_list_of_external_data(cls):
+        '''Retrieves list of available data from website's directory listing
+
+        Sample line from url reqest the list of files (single line):
+        '<tr><td><a href="rcdas.2015010300.awip32.merged.b">
+            rcdas.2015010300.awip32.merged.b</a></td>
+        <td align="right">08-Jan-2015 10:12  </td>
+        <td align="right">1.3M</td></tr>\n'
+        '''
+        logger = logging.getLogger(__name__)
+        ArchiveData = collections.namedtuple('ArchiveData',
+                                             ['name', 'mtime', 'size'])
+
+        lines_thrown = 0
+        data_list = []
+
+        custom_session = cls.get_session()
+        data = custom_session.get_lines_from_url(Ncep.get_url(''))
+
+        for line in data:
             if('awip' not in line):
                 lines_thrown = lines_thrown + 1
                 continue  # go to next line
